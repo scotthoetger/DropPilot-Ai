@@ -1,0 +1,268 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DropPilot AI | Business Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif}
+header{background:#111e30;padding:20px;border-bottom:1px solid #26394d;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.logo{font-size:25px;font-weight:bold;color:#38bdf8}
+main{max-width:1100px;margin:auto;padding:20px}
+h1{font-size:32px;margin-bottom:8px}
+h2{font-size:21px}
+p{color:#a9bfd4;line-height:1.6}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+.card{background:#142238;border:1px solid #2c4059;border-radius:15px;padding:22px;margin-bottom:18px}
+button{background:#38bdf8;color:#081525;border:0;padding:13px 18px;border-radius:9px;font-size:15px;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.6}
+.secondary{background:#293d56;color:white}
+input,textarea{display:block;width:100%;padding:13px;margin:9px 0 17px;border:1px solid #40536b;border-radius:8px;background:#0b1728;color:white;font-size:16px}
+textarea{height:125px;resize:vertical}
+label{color:#c3d5e8}
+.hidden{display:none!important}
+#message{color:#7dd3fc;min-height:24px;white-space:pre-wrap}
+#output{background:#0b1728;padding:18px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+.actions{display:flex;gap:10px;flex-wrap:wrap}
+.badge{background:#243d54;border-radius:20px;padding:8px 12px;color:#d4eaff;font-size:13px}
+footer{text-align:center;padding:30px;color:#8da4bd}
+@media(max-width:600px){header{padding:15px}.logo{font-size:21px}h1{font-size:27px}}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">✦ DropPilot AI</div>
+<div class="actions">
+<span id="account" class="badge">Guest</span>
+<button id="logout" class="secondary hidden">Logout</button>
+</div>
+</header>
+
+<main>
+<h1>AI Business Dashboard</h1>
+<p>Research ideas, create product content, and grow your online business with AI.</p>
+<p id="message" role="status"></p>
+
+<section id="auth">
+<div class="card">
+<h2 id="authTitle">Login to DropPilot AI</h2>
+<form id="authForm">
+<label>Email Address</label>
+<input id="email" type="email" autocomplete="email" required>
+<label>Password</label>
+<input id="password" type="password" minlength="10" autocomplete="current-password" required>
+<div class="actions">
+<button id="authBtn" type="submit">Login</button>
+<button id="switchBtn" class="secondary" type="button">Create Account</button>
+</div>
+</form>
+<p>New accounts require a password of at least 10 characters.</p>
+</div>
+</section>
+
+<section id="dashboard" class="hidden">
+<div class="grid">
+<div class="card">
+<h2>📦 AI Product Studio</h2>
+<p>Create product titles, descriptions, benefits, and marketing hooks.</p>
+<form id="generateForm">
+<label>Describe Your Product</label>
+<textarea id="product" maxlength="500" placeholder="Example: Waterproof travel backpack with laptop storage" required></textarea>
+<label>Target Audience</label>
+<input id="audience" maxlength="250" placeholder="Example: Travelers and college students">
+<button id="generateBtn" type="submit">Generate With AI</button>
+</form>
+</div>
+
+<div class="card">
+<h2>📊 Account Dashboard</h2>
+<p id="plan">Current Plan: Free</p>
+<p id="remaining">3 free AI generations daily.</p>
+<div class="actions">
+<button id="upgrade">Upgrade Plan</button>
+<button id="billing" class="secondary hidden">Manage Billing</button>
+</div>
+</div>
+
+<div class="card">
+<h2>🎯 Product Research</h2>
+<p>Use AI to brainstorm potential product opportunities and research questions.</p>
+<p>Always verify suppliers, demand, costs, and competition before purchasing inventory.</p>
+</div>
+
+<div class="card">
+<h2>📣 Marketing Assistant</h2>
+<p>Generate advertising hooks, product benefits, and copy for social media campaigns.</p>
+</div>
+</div>
+
+<div id="resultsCard" class="card hidden">
+<h2>✨ Your AI Generated Content</h2>
+<div id="output"></div>
+<div class="actions" style="margin-top:15px">
+<button id="copyBtn" class="secondary">Copy Results</button>
+</div>
+</div>
+</section>
+</main>
+
+<footer>© 2026 DropPilot AI | Your AI Business Platform</footer>
+
+<script>
+const el=id=>document.getElementById(id);
+let token=sessionStorage.getItem("dp_token")||"";
+let registering=false;
+let generatedText="";
+
+function message(text){
+el("message").textContent=text;
+}
+
+async function api(url,options={}){
+let response;
+try{
+response=await fetch(url,{
+...options,
+headers:{
+"Content-Type":"application/json",
+...(token?{Authorization:"Bearer "+token}:{}),
+...(options.headers||{})
+}
+});
+}catch(e){
+throw Error("Network connection failed.");
+}
+const data=await response.json().catch(()=>({}));
+if(!response.ok){
+throw Error(data.error||"Request failed: "+response.status);
+}
+return data;
+}
+
+function showDashboard(user){
+const loggedIn=!!user;
+el("auth").classList.toggle("hidden",loggedIn);
+el("dashboard").classList.toggle("hidden",!loggedIn);
+el("logout").classList.toggle("hidden",!loggedIn);
+el("account").textContent=user?user.email:"Guest";
+
+if(user){
+const paid=["active","trialing"].includes(user.subscription_status);
+el("plan").textContent="Current Plan: "+(paid?"Pro":"Free");
+el("remaining").textContent="Daily generation limit: "+(paid?30:3);
+el("upgrade").classList.toggle("hidden",paid);
+el("billing").classList.toggle("hidden",!paid);
+}
+}
+
+function signOut(){
+token="";
+sessionStorage.removeItem("dp_token");
+showDashboard(null);
+}
+
+el("switchBtn").onclick=()=>{
+registering=!registering;
+el("authTitle").textContent=registering?"Create Your Account":"Login to DropPilot AI";
+el("authBtn").textContent=registering?"Register":"Login";
+el("switchBtn").textContent=registering?"Back to Login":"Create Account";
+el("password").autocomplete=registering?"new-password":"current-password";
+};
+
+el("authForm").onsubmit=async event=>{
+event.preventDefault();
+const button=el("authBtn");
+button.disabled=true;
+try{
+const data=await api(registering?"/api/register":"/api/login",{
+method:"POST",
+body:JSON.stringify({
+email:el("email").value,
+password:el("password").value
+})
+});
+token=data.token;
+sessionStorage.setItem("dp_token",token);
+showDashboard(data.user);
+el("password").value="";
+message("Welcome to DropPilot AI!");
+}catch(error){
+message(error.message);
+}finally{
+button.disabled=false;
+}
+};
+
+el("logout").onclick=()=>{
+signOut();
+message("You have signed out.");
+};
+
+el("generateForm").onsubmit=async event=>{
+event.preventDefault();
+const button=el("generateBtn");
+button.disabled=true;
+button.textContent="Generating...";
+try{
+const data=await api("/api/generate",{
+method:"POST",
+body:JSON.stringify({
+product:el("product").value,
+audience:el("audience").value
+})
+});
+generatedText=data.result;
+el("output").textContent=generatedText;
+el("resultsCard").classList.remove("hidden");
+el("remaining").textContent="Generations remaining today: "+data.remaining;
+message("AI content generated successfully.");
+}catch(error){
+message(error.message);
+}finally{
+button.disabled=false;
+button.textContent="Generate With AI";
+}
+};
+
+el("copyBtn").onclick=async()=>{
+try{
+await navigator.clipboard.writeText(generatedText);
+message("Results copied!");
+}catch(e){
+message("Select the results to copy manually.");
+}
+};
+
+el("upgrade").onclick=async()=>{
+try{
+const data=await api("/api/checkout",{method:"POST"});
+if(data.url)window.location.href=data.url;
+}catch(error){
+message(error.message);
+}
+};
+
+el("billing").onclick=async()=>{
+try{
+const data=await api("/api/billing-portal",{method:"POST"});
+if(data.url)window.location.href=data.url;
+}catch(error){
+message(error.message);
+}
+};
+
+if(token){
+api("/api/me").then(data=>{
+showDashboard(data.user);
+}).catch(()=>{
+signOut();
+message("Please sign in again.");
+});
+}else{
+showDashboard(null);
+}
+</script>
+</body>
+</html>
