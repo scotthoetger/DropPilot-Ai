@@ -10,26 +10,49 @@ import OpenAI from 'openai';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const app=express();app.disable('x-powered-by');app.set('trust proxy',1);
+const app=express();
+app.disable('x-powered-by');
+app.set('trust proxy',1);
 app.use(helmet({contentSecurityPolicy:false}));
 const db=process.env.DATABASE_URL?new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DB_SSL==='false'?false:{rejectUnauthorized:false}}):null;
 const stripe=process.env.STRIPE_SECRET_KEY?new Stripe(process.env.STRIPE_SECRET_KEY):null;
 const ai=process.env.OPENAI_API_KEY?new OpenAI({apiKey:process.env.OPENAI_API_KEY}):null;
 const baseUrl=(process.env.APP_URL||'http://localhost:3000').replace(/\/$/,'');
 const secret=process.env.JWT_SECRET;
-const tools={product:{title:'Product Studio',prompt:'Create a factual product title, persuasive description, five benefits grounded only in the supplied facts, three ad hooks, and a target customer profile.'},research:{title:'Product Research',prompt:'Develop product opportunity hypotheses, competitor research questions, demand validation steps, supplier due diligence and risks. You have no live market or supplier data; do not pretend otherwise.'},ads:{title:'Ad Creator',prompt:'Write three ad variations with headline, primary copy, call to action, and creative idea. Avoid unsupported claims and guarantees.'},social:{title:'Social Media',prompt:'Write platform-ready social captions, short video script, five content ideas, and hashtags. No fabricated testimonials.'},seo:{title:'SEO Listings',prompt:'Write an SEO title, meta description, product description, suggested keywords and image alt text. Do not invent product specifications.'},profit:{title:'Profit Planner',prompt:'Analyze the provided cost and selling-price assumptions, show profit calculations clearly and identify missing costs such as shipping, platform fees, ads, returns and taxes. If numbers are missing, provide a fill-in template rather than inventing them.'}};
+const tools={
+ product:{title:'Product Studio',prompt:'Create a factual product title, persuasive description, five benefits grounded only in supplied facts, three ad hooks, and a target customer profile.'},
+ research:{title:'Product Research',prompt:'Develop product opportunity hypotheses, competitor research questions, demand validation steps, supplier due diligence and risks. You have no live market or supplier data; do not pretend otherwise.'},
+ ads:{title:'Ad Creator',prompt:'Write three ad variations with headline, primary copy, call to action, and creative idea. Avoid unsupported claims and guarantees.'},
+ social:{title:'Social Media',prompt:'Write platform-ready social captions, short video script, five content ideas, and hashtags. No fabricated testimonials.'},
+ seo:{title:'SEO Listings',prompt:'Write an SEO title, meta description, product description, suggested keywords and image alt text. Do not invent product specifications.'},
+ profit:{title:'Profit Planner',prompt:'Analyze provided cost and selling-price assumptions, show profit calculations clearly and identify missing costs such as shipping, platform fees, ads, returns and taxes. If numbers are missing, provide a fill-in template.'}
+};
 const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res,next)).catch(next);
 const requireDb=(req,res,next)=>db?next():res.status(503).json({error:'Database not configured'});
 function tokenFor(u){return jwt.sign({id:u.id},secret,{expiresIn:'7d'});}
-function auth(req,res,next){if(!secret)return res.status(503).json({error:'Authentication not configured'});try{req.user=jwt.verify((req.headers.authorization||'').replace(/^Bearer /,''),secret);next();}catch{res.status(401).json({error:'Please sign in again'});}}
+function auth(req,res,next){
+ if(!secret)return res.status(503).json({error:'Authentication not configured'});
+ try{req.user=jwt.verify((req.headers.authorization||'').replace(/^Bearer /,''),secret);next();}
+ catch{return res.status(401).json({error:'Please sign in again'});}
+}
+// Stripe needs the original raw request body to validate signatures.
 app.post('/api/stripe/webhook',express.raw({type:'application/json'}),wrap(async(req,res)=>{
  if(!stripe||!db||!process.env.STRIPE_WEBHOOK_SECRET)return res.sendStatus(503);
- let event;try{event=stripe.webhooks.constructEvent(req.body,req.headers['stripe-signature'],process.env.STRIPE_WEBHOOK_SECRET);}catch{return res.status(400).send('Invalid webhook signature');}
+ let event;
+ try{event=stripe.webhooks.constructEvent(req.body,req.headers['stripe-signature'],process.env.STRIPE_WEBHOOK_SECRET);}
+ catch{return res.status(400).send('Invalid webhook signature');}
  const obj=event.data.object;
  if(event.type==='checkout.session.completed'&&obj.mode==='subscription'){
-  const id=Number(obj.client_reference_id);if(Number.isSafeInteger(id)&&id>0)await db.query('UPDATE users SET stripe_customer_id=$1 WHERE id=$2',[obj.customer,id]);
+  const id=Number(obj.client_reference_id);
+  if(Number.isSafeInteger(id)&&id>0&&obj.customer){
+   // Fetch current status: subscription.created can arrive before checkout.session.completed.
+   const sub=obj.subscription?await stripe.subscriptions.retrieve(obj.subscription):null;
+   const status=sub?.status||'free';
+   await db.query('UPDATE users SET stripe_customer_id=$1,subscription_status=$2 WHERE id=$3',[obj.customer,status,id]);
+  }
  }
  if(['customer.subscription.created','customer.subscription.updated','customer.subscription.deleted'].includes(event.type)){
+  // A later checkout event will reconcile subscription events that arrived first.
   await db.query('UPDATE users SET subscription_status=$1 WHERE stripe_customer_id=$2',[obj.status,obj.customer]);
  }
  res.json({received:true});
@@ -55,21 +78,25 @@ app.post('/api/login',requireDb,wrap(async(req,res)=>{
  const {id,email,subscription_status}=rows[0];res.json({token:tokenFor(rows[0]),user:{id,email,subscription_status}});
 }));
 app.get('/api/me',auth,requireDb,wrap(async(req,res)=>{
- const {rows}=await db.query('SELECT id,email,subscription_status FROM users WHERE id=$1',[req.user.id]);if(!rows[0])return res.sendStatus(404);
+ const {rows}=await db.query('SELECT id,email,subscription_status FROM users WHERE id=$1',[req.user.id]);
+ if(!rows[0])return res.sendStatus(404);
  const paid=['active','trialing'].includes(rows[0].subscription_status),cap=paid?30:3;
  const usage=await db.query('SELECT count FROM usage WHERE user_id=$1 AND day=$2',[req.user.id,new Date().toISOString().slice(0,10)]);
  res.json({user:rows[0],remaining:Math.max(0,cap-(usage.rows[0]?.count||0)),limit:cap});
 }));
 app.post('/api/checkout',auth,requireDb,wrap(async(req,res)=>{
  if(!stripe||!process.env.STRIPE_PRICE_ID||!process.env.STRIPE_WEBHOOK_SECRET||!process.env.APP_URL)return res.status(503).json({error:'Subscription payments are not configured yet'});
- const {rows}=await db.query('SELECT email,stripe_customer_id FROM users WHERE id=$1',[req.user.id]);if(!rows[0])return res.sendStatus(404);
+ const {rows}=await db.query('SELECT email,stripe_customer_id FROM users WHERE id=$1',[req.user.id]);
+ if(!rows[0])return res.sendStatus(404);
  const s=await stripe.checkout.sessions.create({mode:'subscription',line_items:[{price:process.env.STRIPE_PRICE_ID,quantity:1}],customer:rows[0].stripe_customer_id||undefined,customer_email:rows[0].stripe_customer_id?undefined:rows[0].email,client_reference_id:String(req.user.id),success_url:baseUrl+'/?checkout=success',cancel_url:baseUrl+'/?checkout=cancel'});
  res.json({url:s.url});
 }));
 app.post('/api/billing-portal',auth,requireDb,wrap(async(req,res)=>{
  if(!stripe)return res.status(503).json({error:'Stripe not configured'});
- const {rows}=await db.query('SELECT stripe_customer_id FROM users WHERE id=$1',[req.user.id]);if(!rows[0]?.stripe_customer_id)return res.status(400).json({error:'No billing account yet'});
- const s=await stripe.billingPortal.sessions.create({customer:rows[0].stripe_customer_id,return_url:baseUrl});res.json({url:s.url});
+ const {rows}=await db.query('SELECT stripe_customer_id FROM users WHERE id=$1',[req.user.id]);
+ if(!rows[0]?.stripe_customer_id)return res.status(400).json({error:'No billing account yet'});
+ const s=await stripe.billingPortal.sessions.create({customer:rows[0].stripe_customer_id,return_url:baseUrl});
+ res.json({url:s.url});
 }));
 app.post('/api/generate',auth,requireDb,wrap(async(req,res)=>{
  if(!ai)return res.status(503).json({error:'OpenAI not configured'});
@@ -85,8 +112,15 @@ app.post('/api/generate',auth,requireDb,wrap(async(req,res)=>{
   res.json({result:response.choices[0]?.message?.content||'No content generated',remaining:cap-used.rows[0].count});
  }catch(e){await db.query('UPDATE usage SET count=GREATEST(count-1,0) WHERE user_id=$1 AND day=$2',[req.user.id,today]);throw e;}
 }));
-const here=path.dirname(fileURLToPath(import.meta.url));app.use(express.static(path.join(here,'public')));
+const here=path.dirname(fileURLToPath(import.meta.url));
+app.use(express.static(path.join(here,'public')));
 app.get('*',(req,res)=>res.sendFile(path.join(here,'public','index.html')));
 app.use((err,req,res,next)=>{console.error('Request failed:',err);res.status(500).json({error:'Server error. Check Render logs.'});});
-async function start(){if(db){await db.query(`CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,stripe_customer_id TEXT UNIQUE,subscription_status TEXT NOT NULL DEFAULT 'free',created_at TIMESTAMPTZ DEFAULT now())`);await db.query(`CREATE TABLE IF NOT EXISTS usage(user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,day DATE NOT NULL,count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,day))`);}app.listen(Number(process.env.PORT)||3000,'0.0.0.0',()=>console.log('DropPilot AI listening'));}
+async function start(){
+ if(db){
+  await db.query(`CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,stripe_customer_id TEXT UNIQUE,subscription_status TEXT NOT NULL DEFAULT 'free',created_at TIMESTAMPTZ DEFAULT now())`);
+  await db.query(`CREATE TABLE IF NOT EXISTS usage(user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,day DATE NOT NULL,count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,day))`);
+ }
+ app.listen(Number(process.env.PORT)||3000,'0.0.0.0',()=>console.log('DropPilot AI listening'));
+}
 start().catch(e=>{console.error('Startup error',e);process.exit(1)});
