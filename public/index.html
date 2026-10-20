@@ -31,4 +31,6 @@ $('downloadBtn').onclick=()=>{const blob=new Blob([generatedText],{type:'text/pl
 $('upgrade').onclick=async()=>{try{const d=await api('/api/checkout',{method:'POST'});if(d.url)location.href=d.url}catch(e){message(e.message,true)}};
 $('billing').onclick=async()=>{try{const d=await api('/api/billing-portal',{method:'POST'});if(d.url)location.href=d.url}catch(e){message(e.message,true)}};
 if(token)refreshMe().catch(()=>{signOut();message('Please sign in again',true)});else showDashboard(null);
-</script></body></html>
+</script
+<a href="/shopify.html" style="position:fixed;bottom:20px;right:20px;z-index:9999;background:#57c8ff;color:#081526;padding:14px 18px;border-radius:12px;font-weight:bold;text-decoration:none;box-shadow:0 4px 16px #0006;">🛍️ Shopify Studio</a>
+></body></html>
